@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+spec:
+  serviceName: mysql
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      initContainers:
+      - name: init-mysql
+        image: docker.io/library/mysql:8.0
+        command:
+        - bash
+        - "-c"
+        - |
+          set -ex
+          # 从 hostname 提取序号：mysql-0 → 0
+          [[ $HOSTNAME =~ -([0-9]+)$ ]] && ordinal=${BASH_REMATCH[1]}
+          
+          # 根据序号决定角色
+          if [[ $ordinal -eq 0 ]]; then
+            # mysql-0 是 Master
+            cp /mnt/config-map/master.cnf /mnt/conf.d/server.cnf
+            # server-id = 1
+            echo "[mysqld]" >> /mnt/conf.d/server.cnf
+            echo "server-id=1" >> /mnt/conf.d/server.cnf
+          else
+            # mysql-1, mysql-2 是 Replica
+            cp /mnt/config-map/replica.cnf /mnt/conf.d/server.cnf
+            # server-id = ordinal + 1
+            echo "[mysqld]" >> /mnt/conf.d/server.cnf
+            echo "server-id=$((ordinal + 1))" >> /mnt/conf.d/server.cnf
+          fi
+        volumeMounts:
+        - name: conf
+          mountPath: /mnt/conf.d
+        - name: config-map
+          mountPath: /mnt/config-map
+
+      containers:
+      - name: mysql
+        image: docker.io/library/mysql:8.0
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: "rootpass"
+        ports:
+        - containerPort: 3306
+        volumeMounts:
+        - name: mysql-data
+          mountPath: /var/lib/mysql
+        - name: conf
+          mountPath: /etc/mysql/conf.d   # mysql 启动时读这里的配置
+
+      volumes:
+      - name: conf
+        emptyDir: {}        # initContainer 和主容器共享这个临时目录
+      - name: config-map
+        configMap:
+          name: mysql-config
+
+  volumeClaimTemplates:
+  - metadata:
+      name: mysql-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi
